@@ -79,7 +79,18 @@
             bottom: 2px;
             right: 5px;
         }
-        /* Hidden field for tracking multiple checkins */
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+        .mood-stats {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
         .tcm-tracker {
             display: none;
         }
@@ -89,6 +100,10 @@
     <div class="header">
         <h1>Team Weekly Mood Tracker</h1>
         <p>Select an emoji to share how you're feeling today (anonymously)</p>
+    </div>
+
+    <div class="mood-stats" id="mood-stats">
+        <div id="today-moods">Loading team mood data...</div>
     </div>
 
     <div class="week-container">
@@ -124,6 +139,11 @@
     <div class="tcm-tracker"></div>
 
     <script>
+        // GitHub repository details
+        const GITHUB_OWNER = 'YOUR_GITHUB_USERNAME';
+        const GITHUB_REPO = 'YOUR_REPO_NAME';
+        const GITHUB_TOKEN = ''; // For public repos, you don't need a token
+        
         // List of emojis to choose from
         const emojis = [
             "😀", "😃", "😄", "😁", "😆", "😅", "🤣", "😂", "🙂", "🙃", 
@@ -153,7 +173,7 @@
             emojiSelector.appendChild(emojiElement);
         });
 
-        // Get user IP address
+        // Get user IP address (for unique identification)
         async function getUserIP() {
             try {
                 const response = await fetch('https://api.ipify.org?format=json');
@@ -162,7 +182,8 @@
                 return data.ip;
             } catch (error) {
                 console.error('Error fetching IP:', error);
-                return 'unknown';
+                // Generate a random ID if we can't get IP
+                return 'user_' + Math.random().toString(36).substring(2, 15);
             }
         }
 
@@ -181,13 +202,27 @@
         async function selectEmoji(emoji) {
             const ip = document.getElementById('userIP').value || await getUserIP();
             const timestamp = new Date().toISOString();
-            const day = currentDay;
+            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
             
-            // In a real app, you'd send this to your server
-            saveMood(ip, day, emoji, timestamp);
+            // Create a unique identifier for this user
+            const userId = ip.replace(/\./g, '_');
             
-            // For this demo, we'll save to localStorage
-            localStorage.setItem(`mood_${ip}_${day}`, JSON.stringify({
+            // Create an issue title that includes the date and user ID
+            const issueTitle = `Mood: ${today} | ${userId}`;
+            
+            // Check if an issue already exists for this user and date
+            const existingIssue = await findExistingIssue(issueTitle);
+            
+            if (existingIssue) {
+                // Update existing issue
+                await updateGitHubIssue(existingIssue.number, emoji, timestamp);
+            } else {
+                // Create new issue
+                await createGitHubIssue(issueTitle, emoji, timestamp);
+            }
+            
+            // Also save locally for quick access
+            localStorage.setItem(`mood_${ip}_${currentDay}`, JSON.stringify({
                 emoji: emoji,
                 timestamp: timestamp
             }));
@@ -195,21 +230,116 @@
             loadMoods();
         }
 
-        // Mock function that would normally send data to your server
-        function saveMood(ip, day, emoji, timestamp) {
-            console.log(`Saving mood for IP ${ip} on ${day}: ${emoji} at ${timestamp}`);
-            // In a real implementation, this would be an API call
-            // fetch('/api/moods', {
-            //     method: 'POST',
-            //     headers: { 'Content-Type': 'application/json' },
-            //     body: JSON.stringify({ ip, day, emoji, timestamp })
-            // });
+        // Find existing issue by title
+        async function findExistingIssue(title) {
+            const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues?state=all`;
+            const response = await fetch(url);
+            const issues = await response.json();
+            
+            return issues.find(issue => issue.title === title);
         }
 
-        // Load and display moods from storage
-        function loadMoods() {
+        // Create GitHub issue
+        async function createGitHubIssue(title, emoji, timestamp) {
+            const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues`;
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            
+            if (GITHUB_TOKEN) {
+                headers.Authorization = `token ${GITHUB_TOKEN}`;
+            }
+            
+            const body = JSON.stringify({
+                title: title,
+                body: `Mood: ${emoji}\nTimestamp: ${timestamp}\nDay: ${currentDay}`,
+                labels: ['mood', currentDay]
+            });
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: headers,
+                    body: body
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`GitHub API error: ${response.status}`);
+                }
+                
+                console.log('Mood saved as GitHub issue');
+            } catch (error) {
+                console.error('Error creating GitHub issue:', error);
+                alert('Unable to save your mood. Please try again later.');
+            }
+        }
+
+        // Update GitHub issue
+        async function updateGitHubIssue(issueNumber, emoji, timestamp) {
+            const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${issueNumber}`;
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            
+            if (GITHUB_TOKEN) {
+                headers.Authorization = `token ${GITHUB_TOKEN}`;
+            }
+            
+            const body = JSON.stringify({
+                body: `Mood: ${emoji}\nTimestamp: ${timestamp}\nDay: ${currentDay}`,
+            });
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'PATCH',
+                    headers: headers,
+                    body: body
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`GitHub API error: ${response.status}`);
+                }
+                
+                console.log('Mood updated in GitHub issue');
+            } catch (error) {
+                console.error('Error updating GitHub issue:', error);
+                alert('Unable to update your mood. Please try again later.');
+            }
+        }
+
+        // Load and display moods from GitHub issues
+        async function loadMoods() {
             const ip = document.getElementById('userIP').value;
             
+            // Get all issues with the 'mood' label
+            try {
+                const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues?state=all&labels=mood`;
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    throw new Error(`GitHub API error: ${response.status}`);
+                }
+                
+                const issues = await response.json();
+                
+                // Process issues and update UI
+                updateMoodUI(issues);
+                
+            } catch (error) {
+                console.error('Error loading moods from GitHub:', error);
+                document.getElementById('today-moods').innerHTML = 'Error loading team mood data. Please try again later.';
+            }
+        }
+
+        // Update UI with mood data from GitHub issues
+        function updateMoodUI(issues) {
+            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            const todayIssues = issues.filter(issue => issue.title.includes(today));
+            
+            // Update team mood stats
+            updateTeamMoodStats(todayIssues);
+            
+            // Clear all day containers
             days.forEach(day => {
                 if (day === 'sunday' || day === 'saturday') return; // Skip weekend
                 
@@ -217,18 +347,73 @@
                 if (!entriesContainer) return;
                 
                 entriesContainer.innerHTML = '';
-                
-                // In a real app, you'd load all team entries from your server
-                // For this demo, we'll just show the current user's mood
-                const savedMood = localStorage.getItem(`mood_${ip}_${day}`);
-                if (savedMood) {
-                    const { emoji, timestamp } = JSON.parse(savedMood);
-                    const entry = document.createElement('div');
-                    entry.className = 'mood-entry';
-                    entry.innerHTML = `${emoji}<span class="timestamp">${new Date(timestamp).toLocaleTimeString()}</span>`;
-                    entriesContainer.appendChild(entry);
-                }
             });
+            
+            // Process issues and add to appropriate day containers
+            issues.forEach(issue => {
+                // Extract mood and day from issue body
+                const match = issue.body.match(/Mood: (.*)\nTimestamp: (.*)\nDay: (.*)/);
+                if (!match) return;
+                
+                const [, emoji, timestamp, day] = match;
+                
+                // Add to day container
+                const entriesContainer = document.getElementById(`${day}-entries`);
+                if (!entriesContainer) return;
+                
+                const entry = document.createElement('div');
+                entry.className = 'mood-entry';
+                entry.innerHTML = `${emoji}<span class="timestamp">${new Date(timestamp).toLocaleTimeString()}</span>`;
+                entriesContainer.appendChild(entry);
+            });
+        }
+
+        // Update team mood statistics
+        function updateTeamMoodStats(todayIssues) {
+            const todayMoods = document.getElementById('today-moods');
+            
+            if (todayIssues.length === 0) {
+                todayMoods.innerHTML = 'No moods shared yet today.';
+                return;
+            }
+            
+            // Count occurrences of each emoji
+            const emojiCounts = {};
+            todayIssues.forEach(issue => {
+                const match = issue.body.match(/Mood: (.*)\n/);
+                if (!match) return;
+                
+                const emoji = match[1];
+                emojiCounts[emoji] = (emojiCounts[emoji] || 0) + 1;
+            });
+            
+            // Sort emojis by count (descending)
+            const sortedEmojis = Object.entries(emojiCounts).sort((a, b) => b[1] - a[1]);
+            
+            // Create HTML for mood stats
+            let statsHTML = `<h3>Team Mood Today (${todayIssues.length} entries)</h3><div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;">`;
+            
+            sortedEmojis.forEach(([emoji, count]) => {
+                const percentage = Math.round((count / todayIssues.length) * 100);
+                statsHTML += `<div style="background-color: #f0f0f0; padding: 10px; border-radius: 5px; display: flex; align-items: center;">
+                    <span style="font-size: 24px; margin-right: 8px;">${emoji}</span>
+                    <span>${count} (${percentage}%)</span>
+                </div>`;
+            });
+            
+            statsHTML += '</div>';
+            
+            // Show most common mood
+            if (sortedEmojis.length > 0) {
+                const [mostCommonEmoji, count] = sortedEmojis[0];
+                const percentage = Math.round((count / todayIssues.length) * 100);
+                
+                statsHTML += `<div style="margin-top: 15px; text-align: center;">
+                    <p>Most common mood: <span style="font-size: 32px;">${mostCommonEmoji}</span> (${percentage}% of team)</p>
+                </div>`;
+            }
+            
+            todayMoods.innerHTML = statsHTML;
         }
     </script>
 </body>
